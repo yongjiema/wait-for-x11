@@ -1,0 +1,5 @@
+# ShellSpec files: https://github.com/shellspec/shellspec#typical-directory-structure
+/.shellspec-local
+/.shellspec-quick.log
+/report/
+/coverage/

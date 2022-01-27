@@ -1,0 +1,76 @@
+#!/usr/bin/env sh
+
+set -eu
+
+version() {
+  printf 'v0.1.0\n'
+}
+
+help() {
+  cat << \EOF
+Wait for the specified X11 server to be ready.
+
+Usage:
+  wait-for-x11 [options] [--] [<command> [<argument>...]]
+  wait-for-x11 --help
+  wait-for-x11 --version
+
+Options:
+  --help                      Show this help and exit.
+  --version                   Show version and exit.
+  --display string            The X11 server display to connect to (or the
+                              DISPLAY environment variable if not given)
+                              [default: $DISPLAY].
+  --max-retries int           The maximum number of times to test whether X11
+                              server is ready, use 0 to allow unlimited retries
+                              [default: 10].
+  --retry-interval duration   Time between running retries (s|m|h|d), the
+                              suffix is 's' if not given [default: 1s].
+
+Environment:
+  DISPLAY                     The X11 server display to connect to.
+EOF
+}
+
+main() {
+  display="${DISPLAY:-}"
+  max_retries=10
+  retry_interval=1
+
+  while [ $# -gt 0 ]; do
+    case "${1:?}" in
+      '--') shift && break ;;
+      '--help') help && return 0 ;;
+      '--version') version && return 0 ;;
+      '--display') shift && display="${1:?}" && shift ;;
+      '--max-retries') shift && max_retries="${1:?}" && shift ;;
+      '--retry-interval') shift && retry_interval="${1:?}" && shift ;;
+      '-'*) echo "Error: unknown option: ${1}" 1>&2 && return 1 ;;
+      *) break ;;
+    esac
+  done
+
+  if ! command -v xdpyinfo > /dev/null; then
+    printf 'Error: xdpyinfo is required.\n' 1>&2
+    return 1
+  elif [ -z "${display}" ]; then
+    printf 'Error: the X11 server display is not given.\n' 1>&2
+    return 1
+  fi
+
+  limited_retries=0
+  while [ "${limited_retries}" -le "${max_retries}" ] && ! xdpyinfo -display "${display}" > /dev/null 2>&1; do
+    sleep "${retry_interval}"
+    if [ "${max_retries}" -ne 0 ]; then
+      : "$((limited_retries += 1))"
+    fi
+  done
+  if [ "${limited_retries}" -gt "${max_retries}" ]; then
+    printf 'Error: exceeded maximum number of retries.\n' 1>&2
+    return 1
+  fi
+
+  "$@"
+}
+
+main "$@"

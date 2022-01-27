@@ -1,0 +1,97 @@
+name: test
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      LCOV_BASE_PATH: ./base/coveragereport/lcov.info
+    steps:
+      - name: Checkout the current version
+        uses: actions/checkout@v2
+        with:
+          path: current
+      - name: Checkout the base branch
+        uses: actions/checkout@v2
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+      - name: Setup Prettier (1/2)
+        uses: actions/setup-node@v2
+        with:
+          node-version: "lts/*"
+      - name: Setup Prettier (2/2)
+        run: npm install -g prettier
+      - name: Lint
+        run: |
+          set -eu
+          docker run --rm --pull always -t -v "${PWD}/current:/mnt" -w /mnt mstruebing/editorconfig-checker ec -exclude '^README.md$'
+          prettier -c --loglevel warn --no-error-on-unmatched-pattern .
+          docker run --rm --pull always -t -v "${PWD}:/mnt" -w /mnt koalaman/shellcheck:stable current/wait-for-x11 current/spec/*.sh
+          docker run --rm --pull always -t -v "${PWD}/current:/mnt" -w /mnt mvdan/shfmt -d .
+      - name: Try to load the base code coverage report from cache (1/2)
+        if: github.event_name == 'pull_request'
+        run: echo "BASE_COMMIT_HASH=$(git -C base rev-parse HEAD)" >> $GITHUB_ENV
+      - name: Try to load the base code coverage report from cache (2/2)
+        if: github.event_name == 'pull_request'
+        id: cache-base-code-coverage-report
+        uses: actions/cache@v2
+        with:
+          path: ${{ env.LCOV_BASE_PATH }}
+          key: base-code-coverage-report-${{ env.BASE_COMMIT_HASH }}
+      - name: Test
+        run: |
+          set -eu
+          # Workaround for GitHub Actions fails with the error: wait-for-x11: not found
+          chmod +x current/wait-for-x11
+          # Workaround for the links from the coverage report are invalid if use absolute paths
+          shellspec_guid=97a015cfb3ba454c843a75c604eca3bd
+          echo "SHELLSPEC_GUID=${shellspec_guid}" >> $GITHUB_ENV
+          # https://github.com/shellspec/shellspec/blob/master/docs/docker.md
+          docker run --pull always --rm -t -u "$(id -u):$(id -g)" -v "${PWD}/current:/${shellspec_guid}" -w "/${shellspec_guid}" shellspec/shellspec:kcov --kcov
+          if [ '${{ github.event_name }}' == 'pull_request' ] && [ '${{ steps.cache-base-code-coverage-report.outputs.cache-hit }}' != 'true' ]; then
+            chmod +x base/wait-for-x11
+            docker run --pull always --rm -t -u "$(id -u):$(id -g)" -v "${PWD}/base:/${shellspec_guid}" -w "/${shellspec_guid}" shellspec/shellspec:kcov --kcov -f f
+          fi
+      - name: Setup ReportGenerator (1/2)
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: "6.0.x"
+      - name: Setup ReportGenerator (2/2)
+        if: github.event_name == 'pull_request'
+        run: dotnet tool install -g dotnet-reportgenerator-globaltool
+      - name: Prepare the code coverage report (1/2)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -eu
+          # Workaround for the links from the coverage report are invalid if use absolute paths
+          # https://docs.microsoft.com/en-us/dotnet/core/testing/unit-testing-code-coverage?tabs=linux
+          project_name=wait-for-x11
+          sed -i -e "s/\/${{ env.SHELLSPEC_GUID }}\/${project_name}\///g" -e 's/\/${{ env.SHELLSPEC_GUID }}\///g' current/coverage/cobertura.xml
+          if [ '${{ steps.cache-base-code-coverage-report.outputs.cache-hit }}' != 'true' ]; then
+            sed -i -e "s/\/${{ env.SHELLSPEC_GUID }}\/${project_name}\///g" -e 's/\/${{ env.SHELLSPEC_GUID }}\///g' base/coverage/cobertura.xml
+          fi
+      # Workaround for romeovs/lcov-reporter-action doesn't support lcov format
+      - name: Prepare the code coverage report (2/2)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -eu
+          # https://danielpalme.github.io/ReportGenerator/usage.html
+          reportgenerator "-reports:current/coverage/cobertura.xml" "-targetdir:current/coveragereport" -reporttypes:lcov
+          if [ '${{ steps.cache-base-code-coverage-report.outputs.cache-hit }}' != 'true' ]; then
+            reportgenerator "-reports:base/coverage/cobertura.xml" "-targetdir:base/coveragereport" -reporttypes:lcov
+          fi
+      - name: Comment the pull request with the code coverage report
+        if: github.event_name == 'pull_request'
+        uses: romeovs/lcov-reporter-action@v0.3.1
+        with:
+          lcov-file: ./current/coveragereport/lcov.info
+          lcov-base: ${{ env.LCOV_BASE_PATH }}
